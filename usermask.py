@@ -15,12 +15,14 @@ class LogMasker(object):
 
     def mask_file(self):
 
+        outfile = self.logfile + "_masked"
         with open(self.logfile, 'r') as inlog:
-            with open(self.logfile + "_masked", 'w') as outlog:
+            with open(outfile, 'w') as outlog:
                 db = shelve.open(LogMasker.MASKDBFILE)
                 for l in inlog:
                     outlog.write(self.mask_line(l, db))
                 db.close()
+        return outfile
 
     def mask_line(self, line, db):
 

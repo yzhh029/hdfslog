@@ -3,6 +3,64 @@ import requests
 import re
 from datetime import datetime
 from bs4 import BeautifulSoup
+from usermask import LogMasker
+
+
+class Log(object):
+
+    STATUS_INIT = 0
+    STATUS_DOWNLOAD = 1
+    STATUS_MASKED = 2
+
+    def __init__(self, name, size, acctime, link):
+        self.name = name
+        self.size = size
+        self.acctime = acctime
+        self.link = link
+        self.maskedLog = None
+        self.status = Log.STATUS_INIT
+
+    def download(self, folder):
+
+        self.status = Log.STATUS_DOWNLOAD
+        pass
+
+    def mask(self):
+        masker = LogMasker(self.name)
+        self.maskedLog = masker.mask_file()
+        self.status = Log.STATUS_MASKED
+
+
+class LogPageParser(object):
+
+    DN_LOGPATTERN = r"hadoop-hdfs-datanode-cms-\w\d{3}\.rcac\.purdue\.edu\.log\.\d"
+    NN_LOGPATTERN = r"hdfs-audit\.log\.\d"
+    TIME_FORMAT = "%b %d, %Y %I:%M:%S %p"
+
+    def __init__(self, link, name_pattern):
+        self.pagelink = link
+        self.pattern = re.compile(name_pattern)
+
+    def getLogList(self, nodeLink):
+
+        page = requests.get(self.pagelink)
+        soup = BeautifulSoup(page.text, 'html.parser')
+
+        logs = soup.find_all('tr')
+
+        logList = []
+
+        for log in logs:
+            cols = log.find_all('td')
+            if self.pattern.match(cols[0].string) is not None:
+                name = cols[0].string
+                size = cols[1].string.split(' ')[0]
+                date_ = datetime.strptime(cols[2].string, LogPageParser.TIME_FORMAT)
+                logList.append(Log(name, size, date_, nodeLink + name))
+                print(name, size, date_, nodeLink + name)
+
+        return logList
+
 
 class DataNode(object):
 
@@ -12,12 +70,22 @@ class DataNode(object):
     PORT = 50075
 
     def __init__(self, name, status):
+        self.name = name
         self.link = "http://" + name + '.rcac.purdue.edu:' + str(DataNode.PORT)
         self.loglink = self.link + "/logs/"
         self.status = status
+        self.pendingLog = None
+
+    def getLogList(self):
+
+        parser = LogPageParser(self.loglink, LogPageParser.DN_LOGPATTERN)
+        self.loglist = parser.getLogList(self.loglink)
+
+    def getNodeLink(self):
+        return self.link
 
     def __str__(self):
-        return self.link + " " + self.status
+        return self.name + " " + self.link + " " + self.status
 
     def __repr__(self):
         return self.__str__()
@@ -34,7 +102,7 @@ class HDFSsite(object):
     def getLiveDataNodes(self):
 
         DNlist_url = self.url + ":" + str(self.port) + '/dfsnodelist.jsp?whatNodes=LIVE'
-        print(DNlist_url)
+        #print(DNlist_url)
         page = requests.get(DNlist_url)
         #print(page.encoding)
         soup = BeautifulSoup(page.text, 'lxml')  # has to use lxml lib to parse, html.parser doesnt work
@@ -55,19 +123,18 @@ class HDFSsite(object):
                 if status == DataNode.STAT_INSERVICE:
                     self.liveDataNodes.append(DataNode(name, status))
 
-        self.printLiveDN()
+        #self.printLiveDN()
 
+    def getDataNode(self, index):
+        if index < len(self.liveDataNodes):
+            return self.liveDataNodes[index]
+        else:
+            return None
 
     def printLiveDN(self):
         if len(self.liveDataNodes) > 0:
             for node in self.liveDataNodes:
                 print(node)
-
-
-
-
-
-
 
 
 class NameNodeLog(object):
@@ -151,6 +218,10 @@ print(testlog_link)
 
 cms = HDFSsite("http://cms-nn00.rcac.purdue.edu", 50070)
 cms.getLiveDataNodes()
+
+node1 = cms.getDataNode(1)
+node1.getLogList()
+
 
 
 
