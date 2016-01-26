@@ -1,7 +1,74 @@
 
-import requests, re
+import requests
+import re
 from datetime import datetime
 from bs4 import BeautifulSoup
+
+class DataNode(object):
+
+    STAT_DECOM = "Decommissioned"
+    STAT_INSERVICE = "In Service"
+
+    PORT = 50075
+
+    def __init__(self, name, status):
+        self.link = "http://" + name + '.rcac.purdue.edu:' + str(DataNode.PORT)
+        self.loglink = self.link + "/logs/"
+        self.status = status
+
+    def __str__(self):
+        return self.link + " " + self.status
+
+    def __repr__(self):
+        return self.__str__()
+
+
+class HDFSsite(object):
+
+    def __init__(self, url, port):
+
+        self.url = url
+        self.port = port
+        self.liveDataNodes = []
+
+    def getLiveDataNodes(self):
+
+        DNlist_url = self.url + ":" + str(self.port) + '/dfsnodelist.jsp?whatNodes=LIVE'
+        print(DNlist_url)
+        page = requests.get(DNlist_url)
+        #print(page.encoding)
+        soup = BeautifulSoup(page.text, 'lxml')  # has to use lxml lib to parse, html.parser doesnt work
+
+        #soup = BeautifulSoup(open("dnlist.html"), 'lxml')
+        nodeTable = soup.body.find('table', 'nodes')
+        nodelist = nodeTable.find_all('tr')[1:]
+
+        self.liveDataNodes = []
+
+        for node in nodelist:
+            #print(node)
+            cols = node.find('td', class_="name")
+            if cols is not None:
+                name = cols.string
+                status = node.find('td', class_="adminstate").string
+
+                if status == DataNode.STAT_INSERVICE:
+                    self.liveDataNodes.append(DataNode(name, status))
+
+        self.printLiveDN()
+
+
+    def printLiveDN(self):
+        if len(self.liveDataNodes) > 0:
+            for node in self.liveDataNodes:
+                print(node)
+
+
+
+
+
+
+
 
 class NameNodeLog(object):
 
@@ -65,14 +132,7 @@ def getNameLogList(text):
     #print(normal_list)
     return normal_list, audit_list
 
-
-
-
-
-
-
-
-
+"""
 nlog = NameNodeLog("hadoop-hdfs-namenode-cms-nn00.rcac.purdue.edu.log.3", None, 2147483681, "Dec 22, 2015 9:54:21 AM", NameNodeLog.TYPE_NORMAL)
 
 print(nlog)
@@ -87,5 +147,11 @@ normal_list, audit_list = getNameLogList(namenode_log_page.text)
 testlog = normal_list[0]
 testlog_link = namenode_log_link + testlog.link
 print(testlog_link)
+"""
+
+cms = HDFSsite("http://cms-nn00.rcac.purdue.edu", 50070)
+cms.getLiveDataNodes()
+
+
 
 
