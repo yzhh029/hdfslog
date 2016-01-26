@@ -1,6 +1,8 @@
 
 import requests
 import re
+import os
+import time
 from datetime import datetime
 from bs4 import BeautifulSoup
 from usermask import LogMasker
@@ -20,10 +22,16 @@ class Log(object):
         self.maskedLog = None
         self.status = Log.STATUS_INIT
 
-    def download(self, folder):
+    def download(self, folder, counter):
+
+        print('downloading', self.name, self.acctime)
+
+        #f = requests.get(self.link)
+        with open(os.path.join(folder, self.name + "_" + str(counter)), 'w') as dfile:
+            #dfile.write(f.text)
+            print('saved to', os.path.join(folder, self.name + "_" + str(counter)))
 
         self.status = Log.STATUS_DOWNLOAD
-        pass
 
     def mask(self):
         masker = LogMasker(self.name)
@@ -40,33 +48,50 @@ class LogPageParser(object):
     def __init__(self, link, name_pattern):
         self.pagelink = link
         self.pattern = re.compile(name_pattern)
+        self.pendingPattern = re.compile(name_pattern[:-4])
+        print(self.pendingPattern)
 
     def getLogList(self, nodeLink):
 
-        page = requests.get(self.pagelink)
+        try:
+            page = requests.get(self.pagelink)
+        except:
+            print("connection to", self.pagelink, " TIMEOUT")
+            return [], None
+
         soup = BeautifulSoup(page.text, 'html.parser')
 
         logs = soup.find_all('tr')
 
         logList = []
+        pendingLog = None
 
         for log in logs:
             cols = log.find_all('td')
             if self.pattern.match(cols[0].string) is not None:
-                name = cols[0].string
+                name = cols[0].string.strip()
+                if name.split('.')[-1] == 'gz':
+                    continue
                 size = cols[1].string.split(' ')[0]
                 date_ = datetime.strptime(cols[2].string, LogPageParser.TIME_FORMAT)
                 logList.append(Log(name, size, date_, nodeLink + name))
-                print(name, size, date_, nodeLink + name)
+                #print(name, size, date_, nodeLink + name)
+            elif self.pendingPattern.match(cols[0].string) is not None:
+                name = cols[0].string.strip()
+                if name.split('.')[-1] == 'gz':
+                    continue
+                size = cols[1].string.split(' ')[0]
+                date_ = datetime.strptime(cols[2].string, LogPageParser.TIME_FORMAT)
+                pendingLog = Log(name, size, date_, nodeLink + name)
+                #print("pending log", name, size, date_, nodeLink + name)
 
-        return logList
+        return logList, pendingLog
 
 
 class DataNode(object):
 
     STAT_DECOM = "Decommissioned"
     STAT_INSERVICE = "In Service"
-
     PORT = 50075
 
     def __init__(self, name, status):
@@ -75,14 +100,48 @@ class DataNode(object):
         self.loglink = self.link + "/logs/"
         self.status = status
         self.pendingLog = None
+        self.log_counter = 0
+        self.live = False
+
+        try:
+            os.mkdir(name)
+        except FileExistsError as e:
+            pass
+
+    def goLive(self):
+        self.live = True
 
     def getLogList(self):
 
+        print(self.name, "fetching log list")
+
         parser = LogPageParser(self.loglink, LogPageParser.DN_LOGPATTERN)
-        self.loglist = parser.getLogList(self.loglink)
+        self.loglist, pendingLog = parser.getLogList(self.loglink)
+
+        if self.pendingLog is None or int(self.pendingLog.size) <= int(pendingLog.size):
+            self.newLog = False
+        elif int(self.pendingLog.size) > int(pendingLog.size):
+            print(self.name, "new log found")
+            self.newLog = True
+
+        self.pendingLog = pendingLog
+
+    def downloadAllLog(self):
+        if self.log_counter == 0:
+            for l in self.loglist:
+                l.download(self.name, self.log_counter)
+                self.log_counter += 1
+        elif self.newLog:
+            for l in self.loglist:
+                if l.name[-2:] == '.1':
+                    l.download(self.name, self.log_counter)
+                    self.log_counter += 1
 
     def getNodeLink(self):
         return self.link
+
+    def __eq__(self, other):
+        return self.name == other.name
 
     def __str__(self):
         return self.name + " " + self.link + " " + self.status
@@ -93,11 +152,42 @@ class DataNode(object):
 
 class HDFSsite(object):
 
+    """
+    namenode of a hdfs site
+    """
+
     def __init__(self, url, port):
 
         self.url = url
         self.port = port
         self.liveDataNodes = []
+
+    def loop(self, interval_min):
+        # dead loop
+        self.liveDataNodes = self.getLiveDataNodes()
+        while True:
+            self.checkDNlive()
+            for dn in self.liveDataNodes:
+                if dn.name == 'cms-e000':
+                    dn.getLogList()
+                    dn.downloadAllLog()
+            time.sleep(interval_min * 60)
+
+    def checkDNlive(self):
+
+        newLiveList = self.getLiveDataNodes()
+
+        for olddn in self.liveDataNodes:
+            if olddn not in newLiveList:
+                print(olddn.name, "not live")
+                self.liveDataNodes.remove(olddn)
+            else:
+                #print(olddn.name, "still live")
+                newLiveList.remove(olddn)
+
+        if len(newLiveList) > 0:
+            print('new live nodes', newLiveList)
+            self.liveDataNodes += newLiveList
 
     def getLiveDataNodes(self):
 
@@ -111,7 +201,7 @@ class HDFSsite(object):
         nodeTable = soup.body.find('table', 'nodes')
         nodelist = nodeTable.find_all('tr')[1:]
 
-        self.liveDataNodes = []
+        liveDataNodes = []
 
         for node in nodelist:
             #print(node)
@@ -121,9 +211,11 @@ class HDFSsite(object):
                 status = node.find('td', class_="adminstate").string
 
                 if status == DataNode.STAT_INSERVICE:
-                    self.liveDataNodes.append(DataNode(name, status))
-
+                    #newdn = DataNode()
+                    liveDataNodes.append(DataNode(name, status))
+        return liveDataNodes
         #self.printLiveDN()
+
 
     def getDataNode(self, index):
         if index < len(self.liveDataNodes):
@@ -135,6 +227,7 @@ class HDFSsite(object):
         if len(self.liveDataNodes) > 0:
             for node in self.liveDataNodes:
                 print(node)
+
 
 
 class NameNodeLog(object):
@@ -215,12 +308,12 @@ testlog = normal_list[0]
 testlog_link = namenode_log_link + testlog.link
 print(testlog_link)
 """
+if __name__ == "__main__":
 
-cms = HDFSsite("http://cms-nn00.rcac.purdue.edu", 50070)
-cms.getLiveDataNodes()
+    cms = HDFSsite("http://cms-nn00.rcac.purdue.edu", 50070)
+    cms.loop(1)
 
-node1 = cms.getDataNode(1)
-node1.getLogList()
+
 
 
 
