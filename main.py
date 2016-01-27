@@ -14,6 +14,8 @@ class Log(object):
     STATUS_DOWNLOAD = 1
     STATUS_MASKED = 2
 
+    FAKE_DOWNLOAD = False
+
     def __init__(self, name, size, acctime, link):
         self.name = name
         self.size = size
@@ -27,9 +29,15 @@ class Log(object):
         print('downloading', self.name, self.acctime)
 
         #f = requests.get(self.link)
-        with open(os.path.join(folder, self.name + "_" + str(counter)), 'w') as dfile:
+        if Log.FAKE_DOWNLOAD:
+            with open(os.path.join(folder, self.name + "_" + str(counter)), 'w') as dfile:
             #dfile.write(f.text)
-            print('saved to', os.path.join(folder, self.name + "_" + str(counter)))
+                print('saved to', os.path.join(folder, self.name + "_" + str(counter)))
+        else:
+            f = requests.get(self.link, stream-True)
+            with open(os.path.join(folder, self.name + "_" + str(counter)), 'w') as dfile:
+                for block in f.iter_content(1024):
+                    dfile.write(block)
 
         self.status = Log.STATUS_DOWNLOAD
 
@@ -37,6 +45,12 @@ class Log(object):
         masker = LogMasker(self.name)
         self.maskedLog = masker.mask_file()
         self.status = Log.STATUS_MASKED
+
+    def __str__(self):
+        return self.name + " " + self.size
+
+    def __repr__(self):
+        return self.__str__()
 
 
 class LogPageParser(object):
@@ -102,6 +116,7 @@ class DataNode(object):
         self.pendingLog = None
         self.log_counter = 0
         self.live = False
+        self.loglist = None
 
         try:
             os.mkdir(name)
@@ -129,13 +144,14 @@ class DataNode(object):
     def downloadAllLog(self):
         if self.log_counter == 0:
             for l in self.loglist:
-                l.download(self.name, self.log_counter)
+                l.download('namenode', self.log_counter)
                 self.log_counter += 1
         elif self.newLog:
             for l in self.loglist:
                 if l.name[-2:] == '.1':
-                    l.download(self.name, self.log_counter)
+                    l.download('namenode', self.log_counter)
                     self.log_counter += 1
+
 
     def getNodeLink(self):
         return self.link
@@ -160,18 +176,59 @@ class HDFSsite(object):
 
         self.url = url
         self.port = port
+        self.loglink = url + ":" + str(port) + '/logs/'
+        self.loglist = None
+        self.pendingLog = None
         self.liveDataNodes = []
+        self.log_counter = 0
+
+        if os.path.exists('namenode') is False:
+            os.mkdir('namenode')
+
+    def getLogList(self):
+
+        print('namenode fetch log list')
+
+        parser = LogPageParser(self.loglink, LogPageParser.NN_LOGPATTERN)
+        self.loglist, pendingLog = parser.getLogList(self.loglink)
+
+        if self.pendingLog is None or int(self.pendingLog.size) <= int(pendingLog.size):
+            self.newLog = False
+        elif int(self.pendingLog.size) > int(pendingLog.size):
+            print('namenode', "new log found")
+            self.newLog = True
+
+        self.pendingLog = pendingLog
+
+    def downloadAllLog(self):
+
+        if self.log_counter == 0:
+            for l in self.loglist:
+                l.download('namenode', self.log_counter)
+                self.log_counter += 1
+        elif self.newLog:
+            for l in self.loglist:
+                if l.name[-2:] == '.1':
+                    l.download('namenode', self.log_counter)
+                    self.log_counter += 1
+
 
     def loop(self, interval_min):
+
         # dead loop
         self.liveDataNodes = self.getLiveDataNodes()
         while True:
             self.checkDNlive()
+            self.getLogList()
+            self.downloadAllLog()
+
             for dn in self.liveDataNodes:
-                if dn.name == 'cms-e000':
-                    dn.getLogList()
-                    dn.downloadAllLog()
+                dn.getLogList()
+                dn.downloadAllLog()
+
             time.sleep(interval_min * 60)
+
+        #self.getLogList()
 
     def checkDNlive(self):
 
@@ -229,89 +286,12 @@ class HDFSsite(object):
                 print(node)
 
 
-
-class NameNodeLog(object):
-
-    MAXSIZE = 2147480000
-    TYPE_NORMAL = "normal"
-    TYPE_AUDIT = "audit"
-    time_format = "%b %d, %Y %I:%M:%S %p"
-    normal_ptn = r"hadoop-hdfs-namenode-cms-nn00\.rcac\.purdue\.edu\.log.*"
-    audit_ptn = r"hdfs-audit\.log.*"
-
-    def __init__(self, fname, link, size, modify_time, t):
-        self.ori_name = fname
-        self.link = link
-        self.size = size
-        self.modify_time = datetime.strptime(modify_time, NameNodeLog.time_format)
-        self.type = t
-
-    def __str__(self):
-        return self.__repr__()
-
-    def __repr__(self):
-        return " ".join(["NameNodeLog", self.ori_name, str(self.size), self.modify_time.strftime(self.time_format), self.type])
-
-    def log_ready(self):
-        return self.size >= NameNodeLog.MAXSIZE and self.ori_name.split(".")[-1] != "log"
-
-
-def getNameLogList(text):
-
-    soup = BeautifulSoup(text, "html.parser")
-
-    re_normal = re.compile(NameNodeLog.normal_ptn)
-    re_audit = re.compile(NameNodeLog.audit_ptn)
-
-    normal_list = []
-    audit_list = []
-
-    for l in soup.text.split('\n'):
-        #print(l)
-        fields = l.replace(u'\xa0', " ").split()
-        #print(fields)
-
-        if len(fields) < 3:
-            continue
-
-        name = fields[0]
-        size = int(fields[1])
-        mtime = " ".join(fields[3:])
-        link = name
-
-        if re_normal.match(name):
-            print(name + " normal")
-            normal_list.append(NameNodeLog(name, link, size, mtime, NameNodeLog.TYPE_NORMAL))
-        elif re_audit.match(name):
-            print(name + " audit")
-            audit_list.append(NameNodeLog(name, link, size, mtime, NameNodeLog.TYPE_AUDIT))
-        else:
-            print("wrong type")
-            continue
-
-    #print(normal_list)
-    return normal_list, audit_list
-
-"""
-nlog = NameNodeLog("hadoop-hdfs-namenode-cms-nn00.rcac.purdue.edu.log.3", None, 2147483681, "Dec 22, 2015 9:54:21 AM", NameNodeLog.TYPE_NORMAL)
-
-print(nlog)
-print(nlog.log_ready())
-hdfs = "http://cms-nn00.rcac.purdue.edu:50070/dfshealth.jsp"
-namenode_log_link = "http://cms-nn00.rcac.purdue.edu:50070/logs/"
-namenode_log_page = requests.get(namenode_log_link)
-
-#print(namenode_log_page.text)
-normal_list, audit_list = getNameLogList(namenode_log_page.text)
-
-testlog = normal_list[0]
-testlog_link = namenode_log_link + testlog.link
-print(testlog_link)
-"""
 if __name__ == "__main__":
 
+    Log.FAKE_DOWNLOAD = True
+
     cms = HDFSsite("http://cms-nn00.rcac.purdue.edu", 50070)
-    cms.loop(1)
+    cms.loop(2)
 
 
 
