@@ -140,6 +140,7 @@ class DataNode(object):
         self.log_counter = 0
         self.live = False
         self.loglist = None
+        self.newLog = None
 
         try:
             os.mkdir(name)
@@ -231,6 +232,7 @@ class HDFSsite(object):
         self.pendingLog = None
         self.liveDataNodes = []
         self.log_counter = 0
+        self.newLog = None
 
         if os.path.exists('namenode') is False:
             os.mkdir('namenode')
@@ -242,6 +244,35 @@ class HDFSsite(object):
         parser = LogPageParser(self.loglink, LogPageParser.NN_LOGPATTERN)
         self.loglist, pendingLog = parser.getLogList(self.loglink)
 
+        if self.pendingLog is not None:
+            for l in self.loglist:
+                # find old .1 log in new list
+                if l.acctime == self.pendingLog.acctime:
+                    # if old .1 log is the .1 log in new list
+                    # no newlog
+                    if l.name == self.pendingLog.name:
+                        print('namenode', "no new log")
+                        self.newLog = None
+                        break
+                    # if old .1 log is not .1 log in new list
+                    else:
+                        print('namenode', "found new log")
+                        #logname = l.name[:-2]
+                        new_lognum = int(l.name.split('.')[-1])
+                        self.newLog = []
+                        for i in range(1, new_lognum):
+                            for nl in self.loglist:
+                                if int(nl.name.split(".")[-1]) < new_lognum:
+                                    print('namenode', "new log", nl.name)
+                                    self.newLog.append(nl)
+                        break
+
+        self.pendingLog = pendingLog
+
+        """
+        parser = LogPageParser(self.loglink, LogPageParser.NN_LOGPATTERN)
+        self.loglist, pendingLog = parser.getLogList(self.loglink)
+
         if self.pendingLog is None or int(self.pendingLog.size) <= int(pendingLog.size):
             self.newLog = False
         elif int(self.pendingLog.size) > int(pendingLog.size):
@@ -249,6 +280,7 @@ class HDFSsite(object):
             self.newLog = True
 
         self.pendingLog = pendingLog
+        """
 
     def downloadAllLog(self):
 
@@ -261,11 +293,11 @@ class HDFSsite(object):
             self.loglist[1].download('namenode', self.log_counter)
             self.log_counter += 1
             """
-        elif self.newLog:
-            for l in self.loglist:
-                if l.name[-2:] == '.1':
-                    l.download('namenode', self.log_counter)
-                    self.log_counter += 1
+        elif self.newLog is not None:
+            for l in self.newLog:
+                #if l.name[-2:] == '.1':
+                l.download('namenode', self.log_counter)
+                self.log_counter += 1
 
 
     def loop(self, interval_min):
@@ -274,8 +306,8 @@ class HDFSsite(object):
         self.liveDataNodes = self.getLiveDataNodes()
         while True:
             self.checkDNlive()
-            #self.getLogList()
-            #self.downloadAllLog()
+            self.getLogList()
+            self.downloadAllLog()
 
             for dn in self.liveDataNodes:
                 dn.getLogList()
