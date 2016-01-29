@@ -71,7 +71,7 @@ class Log(object):
 
 class LogPageParser(object):
 
-    DN_LOGPATTERN = r"hadoop-hdfs-datanode-cms-\w\d{3}\.rcac\.purdue\.edu\.log\.\d"
+    DN_LOGPATTERN = r".*\.log\.\d"
     NN_LOGPATTERN = r"hdfs-audit\.log\.\d"
     TIME_FORMAT = "%b %d, %Y %I:%M:%S %p"
 
@@ -360,7 +360,6 @@ class HDFSsite(object):
         return liveDataNodes
         #self.printLiveDN()
 
-
     def getDataNode(self, index):
         if index < len(self.liveDataNodes):
             return self.liveDataNodes[index]
@@ -389,8 +388,8 @@ if __name__ == "__main__":
     Log.FAKE_DOWNLOAD = bool(int(args.fake_dl))
     #print(Log.FAKE_DOWNLOAD)
 
-    cms = HDFSsite(args.namenode, 50070)
-    cms.loop(int(args.period))
+    site = HDFSsite(args.namenode, 50070)
+    site.loop(int(args.period))
 
 
 
